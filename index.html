@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AnyStreaks</title>
+    <style>
+      :root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif; }
+      body { margin: 0; background:#f6f7f9; color:#111; }
+      header { position: sticky; top:0; background:#fff; border-bottom:1px solid #e5e7eb; padding:12px 16px; }
+      main { max-width: 860px; margin: 0 auto; padding: 16px; }
+      .row { display:flex; gap:10px; flex-wrap: wrap; align-items: center; }
+      .tabs button { padding: 8px 10px; border:1px solid #d1d5db; background:#fff; border-radius: 10px; cursor:pointer; }
+      .tabs button.active { border-color:#111; }
+      .card { background:#fff; border:1px solid #e5e7eb; border-radius: 16px; padding: 14px; margin: 12px 0; box-shadow: 0 1px 1px rgba(0,0,0,0.03); }
+      .muted { color:#6b7280; font-size: 12px; }
+      .title { font-weight: 700; font-size: 16px; }
+      input, button { font: inherit; }
+      input[type="text"], input[type="number"] { padding: 8px 10px; border:1px solid #d1d5db; border-radius: 10px; background:#fff; }
+      button.primary { background:#111; color:#fff; border:1px solid #111; }
+      button.danger { background:#fff; color:#b91c1c; border:1px solid #fecaca; }
+      .tasks { margin-top: 10px; display:flex; flex-direction: column; gap: 8px; }
+      label.task { display:flex; gap:10px; align-items:center; padding:8px 10px; border:1px solid #e5e7eb; border-radius: 12px; }
+      .pill { display:inline-block; padding:2px 8px; border-radius: 999px; border:1px solid #e5e7eb; font-size: 12px; background:#f9fafb; }
+      .right { margin-left:auto; }
+      textarea { width:100%; min-height: 110px; padding: 10px; border:1px solid #d1d5db; border-radius: 12px; }
+      .small { font-size: 13px; }
+      .hr { height:1px; background:#e5e7eb; margin: 10px 0; }
+      .warn { background:#fffbeb; border:1px solid #fde68a; padding:10px; border-radius: 12px; }
+      code { background:#f3f4f6; padding:2px 6px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="row" style="justify-content:space-between;">
+        <div>
+          <div class="title">AnyStreaks</div>
+          <div class="muted" id="todayLabel"></div>
+          <div class="muted" id="storageHint"></div>
+        </div>
+        <div class="tabs row">
+          <button id="tabToday" class="active" type="button">今日</button>
+          <button id="tabSettings" type="button">設定</button>
+          <button id="tabData" type="button">データ</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div id="viewToday"></div>
+      <div id="viewSettings" style="display:none;"></div>
+      <div id="viewData" style="display:none;"></div>
+    </main>
+
+    <script>
+      /**
+       * AnyStreaks: Cookie only / no server.
+       * Day boundary: 05:00 local time.
+       * "連続記録" (Goal) has a streak. "タスク" (Task) check-in determines daily achievement.
+       *
+       * Important:
+       * - Cookies may not persist when opened via file:// in some browsers.
+       *   Use http:// (e.g., python3 -m http.server) for reliable behavior.
+       */
+
+      const COOKIE_KEY = "any_streaks_app";
+      const DAY_BOUNDARY_HOUR = 5;
+
+      function pad2(n){ return String(n).padStart(2,"0"); }
+
+      function getDayKey(d = new Date()){
+          const local = new Date(d.getTime());
+          if (local.getHours() < DAY_BOUNDARY_HOUR){
+              local.setDate(local.getDate() - 1);
+          }
+          const y = local.getFullYear();
+          const m = pad2(local.getMonth()+1);
+          const dd = pad2(local.getDate());
+          return `${y}-${m}-${dd}`;
+      }
+
+      function addDays(dayKey, delta){
+          const [y,m,d] = dayKey.split("-").map(Number);
+          const dt = new Date(y, m-1, d);
+          dt.setDate(dt.getDate() + delta);
+          // noon avoids edge cases around DST and the 05:00 rule
+          return getDayKey(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 12, 0, 0));
+      }
+
+      function diffDays(aKey, bKey){
+          const [ay,am,ad] = aKey.split("-").map(Number);
+          const [by,bm,bd] = bKey.split("-").map(Number);
+          const a = new Date(ay, am-1, ad, 12,0,0);
+          const b = new Date(by, bm-1, bd, 12,0,0);
+          return Math.round((b.getTime() - a.getTime()) / (24*60*60*1000));
+      }
+
+      function uid(){
+          return Math.random().toString(36).slice(2, 10);
+      }
+
+      // --- Cookie helpers ---
+      function setCookie(name, value, days=365){
+          const maxAge = days*24*60*60;
+          document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax`;
+      }
+
+      function getCookie(name){
+          const target = encodeURIComponent(name) + "=";
+          const parts = document.cookie.split("; ");
+          for (const p of parts){
+              if (p.startsWith(target)){
+                  return decodeURIComponent(p.slice(target.length));
+              }
+          }
+          return null;
+      }
+
+      // --- State ---
+      function defaultState(){
+          return {
+              version: 1,
+              lastSeenDayKey: null,
+              streaks: [
+                  // "連続記録" items
+                  // { id, name, requiredCount, streak, lastClosedDayKey, tasks: [ { id, name, checkedDayKey } ] }
+              ]
+          };
+      }
+
+      function loadState(){
+          const raw = getCookie(COOKIE_KEY);
+          if (!raw) return defaultState();
+          try{
+              const st = JSON.parse(raw);
+              if (!st || typeof st !== "object") return defaultState();
+              if (!Array.isArray(st.streaks)) st.streaks = [];
+              return st;
+          } catch {
+              return defaultState();
+          }
+      }
+
+      function trySaveState(){
+          const raw = JSON.stringify(state);
+          setCookie(COOKIE_KEY, raw, 365);
+          const verify = getCookie(COOKIE_KEY);
+          return (verify === raw);
+      }
+
+      function renderStorageHint(ok, len){
+          const elHint = document.getElementById("storageHint");
+          const isFile = location.protocol === "file:";
+          const base = `保存: ${ok ? "OK" : "NG"} / size: ${len} chars`;
+          if (isFile){
+              elHint.textContent = base + "（file:// だとCookieが残らないことがあります。http:// で開くのが安全）";
+          } else if (!ok){
+              elHint.textContent = base + "（Cookieがブロック/容量超過の可能性。項目を減らすかブラウザ設定を確認）";
+          } else {
+              elHint.textContent = base;
+          }
+      }
+
+      // --- Achievement calculation ---
+      function countCheckedTasks(streakItem, dayKey){
+          let n = 0;
+          for (const t of streakItem.tasks){
+              if (t.checkedDayKey === dayKey) n++;
+          }
+          return n;
+      }
+
+      function isAchieved(streakItem, dayKey){
+          const checked = countCheckedTasks(streakItem, dayKey);
+          const required = Math.max(0, Number(streakItem.requiredCount || 0));
+          if (streakItem.tasks.length === 0) return false;
+
+          // requiredCount = 0 => all tasks
+          if (required === 0) return checked === streakItem.tasks.length;
+          return checked >= required;
+      }
+
+      // --- Rollover (closing past days) ---
+      function rollover(nowDayKey){
+          if (!state.lastSeenDayKey){
+              state.lastSeenDayKey = nowDayKey;
+              trySaveState();
+              return;
+          }
+          if (state.lastSeenDayKey === nowDayKey) return;
+
+          const d = diffDays(state.lastSeenDayKey, nowDayKey);
+          if (d <= 0){
+              state.lastSeenDayKey = nowDayKey;
+              trySaveState();
+              return;
+          }
+
+          // Close each day from lastSeenDayKey up to day before nowDayKey
+          for (let i=0; i<d; i++){
+              const closingDayKey = addDays(state.lastSeenDayKey, i);
+
+              for (const s of state.streaks){
+                  if (s.lastClosedDayKey === closingDayKey) continue;
+
+                  const achieved = isAchieved(s, closingDayKey);
+                  if (achieved) s.streak = Number(s.streak || 0) + 1;
+                  else s.streak = 0;
+
+                  s.lastClosedDayKey = closingDayKey;
+              }
+          }
+
+          state.lastSeenDayKey = nowDayKey;
+          trySaveState();
+      }
+
+      // --- UI helpers ---
+      function el(tag, attrs={}, ...children){
+          const e = document.createElement(tag);
+          for (const [k,v] of Object.entries(attrs)){
+              if (k === "class") e.className = v;
+              else if (k === "onclick") e.addEventListener("click", v);
+              else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2), v);
+              else if (v !== null && v !== undefined) e.setAttribute(k, String(v));
+          }
+          for (const c of children){
+              if (c === null || c === undefined) continue;
+              if (typeof c === "string") e.appendChild(document.createTextNode(c));
+              else e.appendChild(c);
+          }
+          return e;
+      }
+
+      function render(){
+          const now = new Date();
+          const todayKey = getDayKey(now);
+
+          document.getElementById("todayLabel").textContent =
+              `${todayKey}（更新時刻: ${DAY_BOUNDARY_HOUR}:00）`;
+
+          renderToday(todayKey);
+          renderSettings();
+          renderData();
+      }
+
+      function renderToday(todayKey){
+          const root = document.getElementById("viewToday");
+          root.innerHTML = "";
+
+          if (state.streaks.length === 0){
+              root.appendChild(el("div", {class:"card warn"},
+                                  el("div", {class:"title"}, "まだ連続記録がありません"),
+                                  el("div", {class:"small"}, "「設定」タブで連続記録とタスクを追加してください。")
+                                 ));
+              return;
+          }
+
+          for (const s of state.streaks){
+              const checked = countCheckedTasks(s, todayKey);
+              const required = Math.max(0, Number(s.requiredCount || 0));
+              const achieved = isAchieved(s, todayKey);
+
+              const header = el("div", {class:"row"},
+                                el("div", {},
+                                   el("div", {class:"title"}, s.name),
+                                   el("div", {class:"muted"},
+                                      `streak: ${Number(s.streak || 0)} / `,
+                                      el("span", {class:"pill"}, achieved ? "達成" : "未達")
+                                     )
+                                  ),
+                                el("div", {class:"right"},
+                                   el("span", {class:"pill"},
+                                      required === 0 ? `全${s.tasks.length}中 ${checked}` : `必要${required} / 完了${checked}`
+                                     )
+                                  )
+                               );
+
+              const tasksBox = el("div", {class:"tasks"});
+              for (const t of s.tasks){
+                  const id = `chk_${s.id}_${t.id}`;
+                  const isChecked = (t.checkedDayKey === todayKey);
+
+                  const checkbox = el("input", {type:"checkbox", id});
+                  checkbox.checked = isChecked;
+                  checkbox.addEventListener("change", () => {
+                      t.checkedDayKey = checkbox.checked ? todayKey : null;
+                      trySaveState();
+                      render();
+                  });
+
+                  const delBtn = el("button", {type:"button", class:"danger small", onclick: () => {
+                      s.tasks = s.tasks.filter(x => x.id !== t.id);
+                      trySaveState();
+                      render();
+                  }}, "削除");
+
+                  tasksBox.appendChild(
+                      el("label", {class:"task", for:id},
+                         checkbox,
+                         el("span", {}, t.name),
+                         el("span", {class:"right"}, delBtn)
+                        )
+                  );
+              }
+
+              const addTaskInput = el("input", {type:"text", placeholder:"タスクを追加", style:"min-width:220px;"});
+              const addTaskBtn = el("button", {type:"button", class:"primary", onclick: () => {
+                  const name = addTaskInput.value.trim();
+                  if (!name) return;
+                  s.tasks.push({ id: uid(), name, checkedDayKey: null });
+                  addTaskInput.value = "";
+                  trySaveState();
+                  render();
+              }}, "追加");
+
+              root.appendChild(el("div", {class:"card"},
+                                  header,
+                                  el("div", {class:"hr"}),
+                                  tasksBox,
+                                  el("div", {class:"row", style:"margin-top:10px;"},
+                                     addTaskInput, addTaskBtn,
+                                     el("div", {class:"muted"})
+                                    )
+                                 ));
+          }
+      }
+
+      function renderSettings(){
+          const root = document.getElementById("viewSettings");
+          root.innerHTML = "";
+
+          const addName = el("input", {type:"text", placeholder:"連続記録名", style:"min-width:240px;"});
+          const addReq = el("input", {type:"number", min:"0", value:"0", style:"width:120px;", title:"0は「全タスク」扱い"});
+          const addBtn = el("button", {type:"button", class:"primary", onclick: () => {
+              const name = addName.value.trim();
+              if (!name) return;
+              state.streaks.push({
+                  id: uid(),
+                  name,
+                  requiredCount: Number(addReq.value || 0),
+                  streak: 0,
+                  lastClosedDayKey: null,
+                  tasks: []
+              });
+              addName.value = "";
+              addReq.value = "0";
+              trySaveState();
+              render();
+          }}, "連続記録を追加");
+
+          root.appendChild(el("div", {class:"card"},
+                              el("div", {class:"title"}, "連続記録を追加"),
+                              el("div", {class:"muted"}, "requiredCount: 0 は「全タスク完了で達成」"),
+                              el("div", {class:"row", style:"margin-top:10px;"}, addName, addReq, addBtn)
+                             ));
+
+          for (const s of state.streaks){
+              const nameInput = el("input", {type:"text", value: s.name, style:"min-width:240px;"});
+              const reqInput = el("input", {type:"number", min:"0", value: String(s.requiredCount ?? 0), style:"width:120px;"});
+
+              const saveBtn = el("button", {type:"button", class:"primary", onclick: () => {
+                  s.name = nameInput.value.trim() || s.name;
+                  s.requiredCount = Number(reqInput.value || 0);
+                  trySaveState();
+                  render();
+              }}, "保存");
+
+              const delBtn = el("button", {type:"button", class:"danger", onclick: () => {
+                  state.streaks = state.streaks.filter(x => x.id !== s.id);
+                  trySaveState();
+                  render();
+              }}, "連続記録削除");
+
+              root.appendChild(el("div", {class:"card"},
+                                  el("div", {class:"row"},
+                                     el("div", {},
+                                        el("div", {class:"title"}, s.name),
+                                        el("div", {class:"muted"}, `tasks: ${s.tasks.length} / streak: ${Number(s.streak||0)}`)
+                                       ),
+                                     el("div", {class:"right row"}, delBtn)
+                                    ),
+                                  el("div", {class:"hr"}),
+                                  el("div", {class:"row"},
+                                     el("span", {class:"small"}, "名称"),
+                                     nameInput,
+                                     el("span", {class:"small"}, "requiredCount"),
+                                     reqInput,
+                                     saveBtn
+                                    ),
+                                  el("div", {class:"muted", style:"margin-top:8px;"},
+                                     "※ requiredCount=0 は全タスク完了。タスクが0個だと達成不可。"
+                                    )
+                                 ));
+          }
+      }
+
+      function renderData(){
+          const root = document.getElementById("viewData");
+          root.innerHTML = "";
+
+          const exportArea = el("textarea", {readonly:"readonly"});
+          exportArea.value = JSON.stringify(state, null, 2);
+
+          const refreshBtn = el("button", {type:"button", onclick: () => {
+              exportArea.value = JSON.stringify(state, null, 2);
+          }}, "表示更新");
+
+          const copyBtn = el("button", {type:"button", class:"primary", onclick: async () => {
+              try{
+                  await navigator.clipboard.writeText(exportArea.value);
+                  alert("コピーしました");
+              } catch {
+                  alert("コピーできませんでした（ブラウザ権限を確認）");
+              }
+          }}, "コピー");
+
+          const importArea = el("textarea", {placeholder:"ここにJSONを貼り付けてインポート"});
+          const importBtn = el("button", {type:"button", class:"primary", onclick: () => {
+              try{
+                  const obj = JSON.parse(importArea.value);
+                  if (!obj || typeof obj !== "object" || !Array.isArray(obj.streaks)){
+                      alert("形式が不正です");
+                      return;
+                  }
+                  state = obj;
+                  trySaveState();
+                  render();
+                  alert("インポートしました");
+              } catch {
+                  alert("JSONとして読めませんでした");
+              }
+          }}, "インポート");
+
+          const resetBtn = el("button", {type:"button", class:"danger", onclick: () => {
+              if (!confirm("全データを消します。OK?")) return;
+              state = defaultState();
+              trySaveState();
+              render();
+          }}, "全削除");
+
+          root.appendChild(el("div", {class:"card"},
+                              el("div", {class:"title"}, "エクスポート / インポート"),
+                              el("div", {class:"row", style:"margin-top:10px;"}, refreshBtn, copyBtn, resetBtn),
+                              el("div", {class:"hr"}),
+                              exportArea,
+                              el("div", {class:"hr"}),
+                              importArea,
+                              el("div", {class:"row", style:"margin-top:10px;"}, importBtn)
+                             ));
+      }
+
+      // --- Tabs ---
+      function setTab(tab){
+          const t1 = document.getElementById("tabToday");
+          const t2 = document.getElementById("tabSettings");
+          const t3 = document.getElementById("tabData");
+          const v1 = document.getElementById("viewToday");
+          const v2 = document.getElementById("viewSettings");
+          const v3 = document.getElementById("viewData");
+
+          t1.classList.toggle("active", tab==="today");
+          t2.classList.toggle("active", tab==="settings");
+          t3.classList.toggle("active", tab==="data");
+
+          v1.style.display = tab==="today" ? "" : "none";
+          v2.style.display = tab==="settings" ? "" : "none";
+          v3.style.display = tab==="data" ? "" : "none";
+      }
+
+      document.getElementById("tabToday").addEventListener("click", () => setTab("today"));
+      document.getElementById("tabSettings").addEventListener("click", () => setTab("settings"));
+      document.getElementById("tabData").addEventListener("click", () => setTab("data"));
+
+      // --- Boot ---
+      let state = loadState();
+      const todayKey = getDayKey(new Date());
+      rollover(todayKey);
+      trySaveState();
+      render();
+    </script>
+  </body>
+</html>
