@@ -25,7 +25,6 @@ export function renderToday(root, state, todayKey, saveAndRerender){
         root.appendChild(el("div", {class:"card warn"},
                             el("div", {class:"title"}, "まだ連続記録がありません"),
                             el("div", {class:"small"}, "「設定」タブで連続記録とタスクを追加してください。"),
-                            el("div", {class:"small"}, "※ import を使うので http:// で開いてください")
                            ));
         return;
     }
@@ -91,7 +90,7 @@ export function renderToday(root, state, todayKey, saveAndRerender){
                             tasksBox,
                             el("div", {class:"row", style:"margin-top:10px;"},
                                addTaskInput, addTaskBtn,
-                               el("div", {class:"muted"}, "※チェックは今日キーにだけ保存")
+                               el("div", {class:"muted"})
                               )
                            ));
     }
@@ -116,7 +115,7 @@ export function renderSettings(root, state, saveAndRerender){
         addName.value = "";
         addReq.value = "0";
         saveAndRerender();
-    }}, "連続記録を追加");
+    }}, "追加");
 
     root.appendChild(el("div", {class:"card"},
                         el("div", {class:"title"}, "連続記録を追加"),
@@ -137,7 +136,7 @@ export function renderSettings(root, state, saveAndRerender){
         const delBtn = el("button", {type:"button", class:"danger", onclick: () => {
             state.streaks = state.streaks.filter(x => x.id !== s.id);
             saveAndRerender();
-        }}, "連続記録削除");
+        }}, "削除");
 
         root.appendChild(el("div", {class:"card"},
                             el("div", {class:"row"},
@@ -155,9 +154,6 @@ export function renderSettings(root, state, saveAndRerender){
                                reqInput,
                                saveBtn
                               ),
-                            el("div", {class:"muted", style:"margin-top:8px;"},
-                               "※ requiredCount=0 は全タスク完了。タスクが0個だと達成不可。"
-                              )
                            ));
     }
 }
@@ -170,7 +166,7 @@ export function renderData(root, state, setStateAndRerender, resetStateAndRerend
 
     const refreshBtn = el("button", {type:"button", onclick: () => {
         exportArea.value = JSON.stringify(state, null, 2);
-    }}, "表示更新");
+    }}, "更新");
 
     const copyBtn = el("button", {type:"button", class:"primary", onclick: async () => {
         try{
@@ -203,7 +199,6 @@ export function renderData(root, state, setStateAndRerender, resetStateAndRerend
 
     root.appendChild(el("div", {class:"card"},
                         el("div", {class:"title"}, "エクスポート / インポート"),
-                        el("div", {class:"muted"}, "Cookieだけなので、たまにJSONをコピーしてバックアップ推奨（容量に注意）"),
                         el("div", {class:"row", style:"margin-top:10px;"}, refreshBtn, copyBtn, resetBtn),
                         el("div", {class:"hr"}),
                         exportArea,
