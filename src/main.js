@@ -12,7 +12,6 @@ const viewData = document.getElementById("viewData");
 const tabToday = document.getElementById("tabToday");
 const tabSettings = document.getElementById("tabSettings");
 const tabData = document.getElementById("tabData");
-const tabHoge = document.getElementById("tabHoge");
 
 let state = loadState();
 let lastSave = { ok: true, size: 0, raw: "" };

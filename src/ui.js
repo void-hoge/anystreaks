@@ -1,6 +1,5 @@
 // src/ui.js
-import { uid } from "./storage.js";
-import { countCheckedTasks, isAchieved } from "./logic.js";
+import { countCheckedTasks, isAchieved, taskCount } from "./logic.js";
 
 function el(tag, attrs={}, ...children){
     const e = document.createElement(tag);
@@ -18,10 +17,15 @@ function el(tag, attrs={}, ...children){
     return e;
 }
 
+function hasOwn(obj, key){
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 export function renderToday(root, state, todayKey, saveAndRerender){
     root.innerHTML = "";
 
-    if (state.streaks.length === 0){
+    const streakNames = Object.keys(state.streaks);
+    if (streakNames.length === 0){
         root.appendChild(el("div", {class:"card warn"},
                             el("div", {class:"title"}, "まだ連続記録がありません"),
                             el("div", {class:"small"}, "「設定」タブで連続記録とタスクを追加してください。"),
@@ -29,14 +33,17 @@ export function renderToday(root, state, todayKey, saveAndRerender){
         return;
     }
 
-    for (const s of state.streaks){
+    for (const streakName of streakNames){
+        const s = state.streaks[streakName];
+
         const checked = countCheckedTasks(s, todayKey);
+        const total = taskCount(s);
         const required = Math.max(0, Number(s.requiredCount || 0));
         const achieved = isAchieved(s, todayKey);
 
         const header = el("div", {class:"row"},
                           el("div", {},
-                             el("div", {class:"title"}, s.name),
+                             el("div", {class:"title"}, streakName),
                              el("div", {class:"muted"},
                                 `streak: ${Number(s.streak || 0)} / `,
                                 el("span", {class:"pill"}, achieved ? "達成" : "未達")
@@ -44,14 +51,16 @@ export function renderToday(root, state, todayKey, saveAndRerender){
                             ),
                           el("div", {class:"right"},
                              el("span", {class:"pill"},
-                                required === 0 ? `全${s.tasks.length}中 ${checked}` : `必要${required} / 完了${checked}`
+                                required === 0 ? `全${total}中 ${checked}` : `完了${checked} / 必要${required}`
                                )
                             )
                          );
 
         const tasksBox = el("div", {class:"tasks"});
-        for (const t of s.tasks){
-            const id = `chk_${s.id}_${t.id}`;
+        for (const taskName of Object.keys(s.tasks)){
+            const t = s.tasks[taskName];
+
+            const id = `chk_${encodeURIComponent(streakName)}_${encodeURIComponent(taskName)}`;
             const isChecked = (t.checkedDayKey === todayKey);
 
             const checkbox = el("input", {type:"checkbox", id});
@@ -62,14 +71,14 @@ export function renderToday(root, state, todayKey, saveAndRerender){
             });
 
             const delBtn = el("button", {type:"button", class:"danger small", onclick: () => {
-                s.tasks = s.tasks.filter(x => x.id !== t.id);
+                delete s.tasks[taskName];
                 saveAndRerender();
             }}, "削除");
 
             tasksBox.appendChild(
                 el("label", {class:"task", for:id},
                    checkbox,
-                   el("span", {}, t.name),
+                   el("span", {}, taskName),
                    el("span", {class:"right"}, delBtn)
                   )
             );
@@ -79,7 +88,11 @@ export function renderToday(root, state, todayKey, saveAndRerender){
         const addTaskBtn = el("button", {type:"button", class:"primary", onclick: () => {
             const name = addTaskInput.value.trim();
             if (!name) return;
-            s.tasks.push({ id: uid(), name, checkedDayKey: null });
+            if (hasOwn(s.tasks, name)){
+                alert("同じ名前のタスクが既にあります");
+                return;
+            }
+            s.tasks[name] = { checkedDayKey: null };
             addTaskInput.value = "";
             saveAndRerender();
         }}, "追加");
@@ -90,7 +103,6 @@ export function renderToday(root, state, todayKey, saveAndRerender){
                             tasksBox,
                             el("div", {class:"row", style:"margin-top:10px;"},
                                addTaskInput, addTaskBtn,
-                               el("div", {class:"muted"})
                               )
                            ));
     }
@@ -104,14 +116,16 @@ export function renderSettings(root, state, saveAndRerender){
     const addBtn = el("button", {type:"button", class:"primary", onclick: () => {
         const name = addName.value.trim();
         if (!name) return;
-        state.streaks.push({
-            id: uid(),
-            name,
+        if (hasOwn(state.streaks, name)){
+            alert("同じ名前の連続記録が既にあります");
+            return;
+        }
+        state.streaks[name] = {
             requiredCount: Number(addReq.value || 0),
             streak: 0,
             lastClosedDayKey: null,
-            tasks: []
-        });
+            tasks: {}
+        };
         addName.value = "";
         addReq.value = "0";
         saveAndRerender();
@@ -123,26 +137,47 @@ export function renderSettings(root, state, saveAndRerender){
                         el("div", {class:"row", style:"margin-top:10px;"}, addName, addReq, addBtn)
                        ));
 
-    for (const s of state.streaks){
-        const nameInput = el("input", {type:"text", value: s.name, style:"min-width:240px;"});
+    for (const streakName of Object.keys(state.streaks)){
+        const s = state.streaks[streakName];
+
+        const nameInput = el("input", {type:"text", value: streakName, style:"min-width:240px;"});
         const reqInput = el("input", {type:"number", min:"0", value: String(s.requiredCount ?? 0), style:"width:120px;"});
 
         const saveBtn = el("button", {type:"button", class:"primary", onclick: () => {
-            s.name = nameInput.value.trim() || s.name;
-            s.requiredCount = Number(reqInput.value || 0);
+            const newName = nameInput.value.trim();
+            if (!newName){
+                alert("名称は空にできません");
+                nameInput.value = streakName;
+                return;
+            }
+            const newReq = Number(reqInput.value || 0);
+
+            // rename if needed
+            if (newName !== streakName){
+                if (hasOwn(state.streaks, newName)){
+                    alert("同じ名前の連続記録が既にあります");
+                    nameInput.value = streakName;
+                    return;
+                }
+                // move object under new key
+                delete state.streaks[streakName];
+                state.streaks[newName] = s;
+            }
+            s.requiredCount = newReq;
+
             saveAndRerender();
         }}, "保存");
 
         const delBtn = el("button", {type:"button", class:"danger", onclick: () => {
-            state.streaks = state.streaks.filter(x => x.id !== s.id);
+            delete state.streaks[streakName];
             saveAndRerender();
         }}, "削除");
 
         root.appendChild(el("div", {class:"card"},
                             el("div", {class:"row"},
                                el("div", {},
-                                  el("div", {class:"title"}, s.name),
-                                  el("div", {class:"muted"}, `tasks: ${s.tasks.length} / streak: ${Number(s.streak||0)}`)
+                                  el("div", {class:"title"}, streakName),
+                                  el("div", {class:"muted"}, `tasks: ${Object.keys(s.tasks).length} / streak: ${Number(s.streak||0)}`)
                                  ),
                                el("div", {class:"right row"}, delBtn)
                               ),
@@ -181,7 +216,7 @@ export function renderData(root, state, setStateAndRerender, resetStateAndRerend
     const importBtn = el("button", {type:"button", class:"primary", onclick: () => {
         try{
             const obj = JSON.parse(importArea.value);
-            if (!obj || typeof obj !== "object" || !Array.isArray(obj.streaks)){
+            if (!obj || typeof obj !== "object" || !obj.streaks || typeof obj.streaks !== "object" || Array.isArray(obj.streaks)){
                 alert("形式が不正です");
                 return;
             }

@@ -22,7 +22,6 @@ export function addDays(dayKey, delta){
     const [y,m,d] = dayKey.split("-").map(Number);
     const dt = new Date(y, m-1, d);
     dt.setDate(dt.getDate() + delta);
-    // noon avoids edge cases around DST + 05:00 rule
     return getDayKey(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 12, 0, 0));
 }
 
@@ -52,16 +51,12 @@ export function getCookie(name){
 }
 
 // ---- state ----
-export function uid(){
-    return Math.random().toString(36).slice(2, 10);
-}
-
 export function defaultState(){
     return {
-        version: 1,
+        version: 2,
         lastSeenDayKey: null,
-        streaks: []
-        // streak: { id, name, requiredCount, streak, lastClosedDayKey, tasks: [{id,name,checkedDayKey}] }
+        // streaks: { [streakName]: { requiredCount, streak, lastClosedDayKey, tasks: { [taskName]: { checkedDayKey } } } }
+        streaks: {}
     };
 }
 
@@ -71,7 +66,11 @@ export function loadState(){
     try{
         const st = JSON.parse(raw);
         if (!st || typeof st !== "object") return defaultState();
-        if (!Array.isArray(st.streaks)) st.streaks = [];
+        if (!st.streaks || typeof st !== "object") return defaultState();
+        if (!st.version || defaultState().version !== st.version){
+            alert("AnyStreaksのバージョンが異なります");
+            return defaultState();
+        }
         return st;
     } catch {
         return defaultState();
@@ -81,7 +80,6 @@ export function loadState(){
 export function trySaveState(state){
     const raw = JSON.stringify(state);
     setCookie(COOKIE_KEY, raw, 365);
-
     const verify = getCookie(COOKIE_KEY);
     return { ok: (verify === raw), size: raw.length, raw };
 }
